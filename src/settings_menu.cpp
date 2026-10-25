@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include <rex/cvar.h>
@@ -32,10 +33,17 @@
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
 
+#if REX_PLATFORM_LINUX
+#include <SDL3/SDL_video.h>
+#endif
+
 REXCVAR_DEFINE_BOOL(mcla_motion_blur, true, "MCLA", "Motion blur");
 REXCVAR_DEFINE_BOOL(mcla_depth_of_field, true, "MCLA", "Depth of field blur");
 REXCVAR_DEFINE_BOOL(mcla_settings_menu, true, "MCLA",
                     "Add the settings submenus to the pause menu");
+REXCVAR_DEFINE_STRING(mcla_quality_preset, "CUSTOM", "MCLA",
+                      "Quality preset chosen in DISPLAY; changing an option it controls sets it "
+                      "back to CUSTOM");
 
 // Set by a host that keeps the settings file somewhere other than next to
 // the executable (PS5).
@@ -341,9 +349,82 @@ std::string OptionGet(const char* name) {
   return rex::cvar::GetFlagByName(name);
 }
 
+#if REX_PLATFORM_LINUX
+// The OUTPUT RESOLUTION row and the presets that set it need a compositor
+// that scales the swapchain to the window; Mesa's X11 WSI does not.
+bool OutputResolutionSupported() {
+  const char* driver = SDL_GetCurrentVideoDriver();
+  return driver && std::strcmp(driver, "wayland") == 0;
+}
+#endif
+
+bool IsPresetControlledOption(const char* name) {
+  static const char* const kOptions[] = {
+      "present_max_height",   "resolution_scale",      "mcla_msaa",
+      "mcla_motion_blur",     "mcla_depth_of_field",   "mcla_shadows",
+      "mcla_foliage_shadows", "mcla_fullscreen_blur",  "mcla_city_lod",
+      "mcla_traffic_lod",     "mcla_traffic_distance", "mcla_pedestrians",
+      "mcla_parked_cars",
+  };
+  for (const char* option : kOptions) {
+    if (std::strcmp(name, option) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Applies a coherent set of options. The render scale, MSAA and full-screen
+// blur are read when the game starts, so the preset row is labelled NEXT
+// START in the same way as those rows; the shadow and density options also
+// apply to the running game where the hooks allow it.
+void ApplyQualityPreset(const char* preset) {
+  const bool performance = std::strcmp(preset, "PERFORMANCE") == 0;
+  const bool balanced = std::strcmp(preset, "BALANCED") == 0;
+  const bool quality = std::strcmp(preset, "QUALITY") == 0;
+  const bool native_4k = std::strcmp(preset, "NATIVE 4K") == 0;
+  if (!performance && !balanced && !quality && !native_4k) {
+    return;
+  }
+
+  const bool high = quality || native_4k;
+  REXLOG_INFO("settings menu: quality preset '{}'", preset);
+
+#if REX_PLATFORM_LINUX
+  // On X11 the swapchain is fixed to the window size, so leave the output
+  // alone rather than saving a value that the presenter cannot honour.
+  if (OutputResolutionSupported()) {
+    rex::cvar::SetFlagByName("present_max_height", native_4k ? "2160" : "1080");
+  }
+#endif
+  rex::cvar::SetFlagByName("resolution_scale",
+                           native_4k ? "3" : (high ? "2" : "1"));
+  rex::cvar::SetFlagByName("mcla_msaa", performance ? "false" : "true");
+  rex::cvar::SetFlagByName("mcla_motion_blur", performance ? "false" : "true");
+  rex::cvar::SetFlagByName("mcla_depth_of_field", performance ? "false" : "true");
+  rex::cvar::SetFlagByName("mcla_shadows", performance ? "false" : "true");
+  rex::cvar::SetFlagByName("mcla_foliage_shadows", performance ? "false" : "true");
+  rex::cvar::SetFlagByName("mcla_fullscreen_blur", performance ? "false" : "true");
+  rex::cvar::SetFlagByName("mcla_city_lod", performance ? "0.75" : "1.0");
+  rex::cvar::SetFlagByName("mcla_traffic_lod", performance ? "0.75" : "1.0");
+  rex::cvar::SetFlagByName("mcla_traffic_distance", performance ? "325" : "400");
+  rex::cvar::SetFlagByName("mcla_pedestrians", performance ? "0.5" : "1.0");
+  rex::cvar::SetFlagByName("mcla_parked_cars", performance ? "0.5" : "1.0");
+}
+
 void OptionSet(const char* name, const char* value) {
   REXLOG_INFO("settings menu: {} = {}", name, value);
+  if (std::strcmp(name, "mcla_quality_preset") == 0) {
+    // The preset row is an action over the other rows, not a value they are
+    // derived from, so apply it directly and leave the label selected.
+    ApplyQualityPreset(value);
+    rex::cvar::SetFlagByName(name, value);
+    return;
+  }
   rex::cvar::SetFlagByName(name, value);
+  if (IsPresetControlledOption(name)) {
+    rex::cvar::SetFlagByName("mcla_quality_preset", "CUSTOM");
+  }
 }
 
 enum class ItemKind { kToggle, kStringChoice, kNumberChoice };
@@ -378,21 +459,27 @@ constexpr const char* kIntroValues[] = {"normal", "fast", "skip"};
 constexpr const char* kIntroLabels[] = {"NORMAL", "FAST", "SKIP (NO LOGO)"};
 constexpr const char* kResolutionValues[] = {"1", "2", "3"};
 constexpr const char* kResolutionLabels[] = {"720P", "1440P", "4K"};
+// Presets set a coherent group of options; PERFORMANCE also drops shadows,
+// QUALITY and NATIVE 4K raise the render scale (and therefore the shadow-map
+// resolution) but the render scale changes at the next start.
+constexpr const char* kPresetValues[] = {"CUSTOM", "PERFORMANCE", "BALANCED", "QUALITY",
+                                         "NATIVE 4K"};
+constexpr const char* kPresetLabels[] = {"CUSTOM", "PERFORMANCE", "BALANCED", "QUALITY",
+                                         "NATIVE 4K"};
 // The game's framebuffer is 1280x720, so its render targets can only be scaled
 // by whole numbers (720p, 1440p, 4K). The swapchain, however, can be any size;
-// the OS scales it to the window. This row caps the swapchain height, which
-// gives a true 1080p output while the window stays at the desktop resolution.
-// The Vulkan presenter patch that implements it is Linux-only.
+// the compositor scales it to the window. This row caps the swapchain height,
+// which gives a true 1080p output while the window stays at the desktop
+// resolution. The Vulkan presenter patch that implements it relies on the
+// compositor scaling the swapchain (Wayland); Mesa's X11 WSI requires a
+// swapchain the size of the window, so CreateSubmenus removes the row there.
+// Keep it last so removing it only shortens the list.
 #if REX_PLATFORM_LINUX
 constexpr const char* kOutputValues[] = {"0", "720", "1080", "1440", "2160"};
 constexpr const char* kOutputLabels[] = {"NATIVE", "720P", "1080P", "1440P", "4K"};
 #endif
 
 const ItemDef kDisplayItems[] = {
-#if REX_PLATFORM_LINUX
-    {"PM_MxOutput", ItemKind::kStringChoice, "present_max_height",
-     "OUTPUT RESOLUTION (NEXT START)", kOutputValues, kOutputLabels, nullptr, 5},
-#endif
     {"PM_MxResolution", ItemKind::kStringChoice, "resolution_scale",
      "RENDER SCALE (NEXT START)", kResolutionValues, kResolutionLabels, nullptr, 3},
     {"PM_MxFps", ItemKind::kNumberChoice, "mcla_fps", "FPS TARGET", nullptr, nullptr, kFpsTargets,
@@ -405,6 +492,12 @@ const ItemDef kDisplayItems[] = {
 #endif
     {"PM_MxMotionBlur", ItemKind::kToggle, "mcla_motion_blur", "MOTION BLUR"},
     {"PM_MxDof", ItemKind::kToggle, "mcla_depth_of_field", "DEPTH OF FIELD"},
+    {"PM_MxPreset", ItemKind::kStringChoice, "mcla_quality_preset",
+     "QUALITY PRESET (NEXT START)", kPresetValues, kPresetLabels, nullptr, 5},
+#if REX_PLATFORM_LINUX
+    {"PM_MxOutput", ItemKind::kStringChoice, "present_max_height",
+     "OUTPUT RESOLUTION (NEXT START)", kOutputValues, kOutputLabels, nullptr, 5},
+#endif
 };
 
 // Detail the game can do without when the frame rate matters more; all as
@@ -453,7 +546,9 @@ struct MenuDef {
   int item_count;
 };
 
-const MenuDef kMenus[] = {
+// Non-const: CreateSubmenus drops the OUTPUT RESOLUTION row on hosts whose
+// presentation path cannot scale a swapchain smaller than the window.
+MenuDef kMenus[] = {
     {"PM_MxTabDisplay", "DISPLAY", "MxDisplayMenu", kDisplayItems,
      int(sizeof(kDisplayItems) / sizeof(kDisplayItems[0]))},
     {"PM_MxTabPerf", "PERFORMANCE", "MxPerfMenu", kPerformanceItems,
@@ -463,6 +558,35 @@ const MenuDef kMenus[] = {
 };
 constexpr int kMenuCount = int(sizeof(kMenus) / sizeof(kMenus[0]));
 constexpr int kMaxRows = 16;
+
+// The OUTPUT RESOLUTION row needs a compositor that scales the swapchain to
+// the window. Mesa's X11 WSI requires the swapchain to be the size of the
+// window, so the presenter cannot apply the cap there. The row is last in
+// kDisplayItems so it can be dropped by shortening the menu.
+void ConfigureMenuItems() {
+  static bool configured = false;
+  if (configured) {
+    return;
+  }
+  configured = true;
+#if REX_PLATFORM_LINUX
+  const char* driver = SDL_GetCurrentVideoDriver();
+  // Not initialized yet: leave the menu alone rather than hiding a row that
+  // may work once the window exists.
+  if (!driver || std::strcmp(driver, "wayland") == 0) {
+    return;
+  }
+  for (MenuDef& menu : kMenus) {
+    if (menu.items == kDisplayItems && menu.item_count > 0) {
+      --menu.item_count;
+    }
+  }
+  REXLOG_INFO(
+      "settings menu: OUTPUT RESOLUTION hidden (SDL video driver '{}' cannot scale the "
+      "swapchain)",
+      driver ? driver : "unknown");
+#endif
+}
 
 int ItemValueCount(const ItemDef& item) {
   return item.kind == ItemKind::kToggle ? 2 : item.value_count;
@@ -518,6 +642,8 @@ int ItemCurrentIndex(const ItemDef& item) {
 
 std::atomic<bool> g_settings_dirty{false};
 
+void SaveSettingsIfChanged();
+
 void ItemSetIndex(const ItemDef& item, int index) {
   if (index < 0 || index >= ItemValueCount(item)) {
     return;
@@ -537,6 +663,9 @@ void ItemSetIndex(const ItemDef& item, int index) {
     }
   }
   g_settings_dirty.store(true, std::memory_order_relaxed);
+  // Save on the change, not only when the submenu is left: the pause menu can
+  // be resumed or the window closed without passing through that path.
+  SaveSettingsIfChanged();
 }
 
 // --- Rows --------------------------------------------------------------------
@@ -800,11 +929,30 @@ void SaveSettingsIfChanged() {
   const auto path = g_mcla_settings_path
                         ? std::filesystem::path(g_mcla_settings_path)
                         : rex::filesystem::GetExecutableFolder() / "mcla.toml";
-  rex::cvar::SaveConfig(path);
+  // SaveConfig only writes values that differ from their defaults. vsync
+  // defaults to on, but ConfigureFrameTiming turns it off at startup unless the
+  // player saved an explicit value, so choosing it back on would be lost if it
+  // were omitted here. Write it explicitly as well.
+  std::string content = rex::cvar::SerializeToTOML();
+  const std::string vsync = rex::cvar::GetFlagByName("vsync");
+  if (!vsync.empty() && content.find("vsync = ") == std::string::npos) {
+    content += "vsync = " + vsync + "\n";
+  }
+  std::ofstream file(path);
+  if (!file) {
+    REXLOG_ERROR("settings menu: failed to open {}", path.string());
+    return;
+  }
+  file << "# Auto-generated cvar configuration\n" << content;
+  if (!file) {
+    REXLOG_ERROR("settings menu: failed to write {}", path.string());
+    return;
+  }
   REXLOG_INFO("settings menu: saved to {}", path.string());
 }
 
 void CreateSubmenus() {
+  ConfigureMenuItems();
   if (g_menus_created.load(std::memory_order_relaxed)) {
     return;
   }
@@ -1074,4 +1222,11 @@ void mcla_dof_composite(PPCRegister& r3) {
     return;
   }
   std::memset(Membase() + r3.u32 + 0xF0, 0, 16);
+}
+
+// settings_menu.cpp: applies the preset named in mcla.toml/the command line
+// before the renderer and the game read their startup options. Called from
+// MclaApp::OnPreSetup.
+void MclaApplyQualityPresetFromConfig() {
+  ApplyQualityPreset(OptionGet("mcla_quality_preset").c_str());
 }
