@@ -6,7 +6,7 @@
   "type": "recomp",
   "project": "mcla-recomp",
   "status": "released",
-  "targets": ["Windows", "PS5"],
+  "targets": ["Linux"],
   "toolchain": "ReXGlue",
   "original": {"region": "USA, Europe", "revision": "Complete Edition"}
 }
