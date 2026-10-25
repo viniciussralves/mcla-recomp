@@ -9,23 +9,14 @@
 #include "mcla_app.h"
 
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <string>
-#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <rex/system/function_dispatcher.h>
-
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
 
 REXCVAR_DEFINE_STRING(mcla_button_prompts, "auto", "MCLA",
                       "Button glyphs: auto (match the controller), xbox or playstation");
@@ -38,58 +29,15 @@ constexpr uint32_t kStringPlatform = 0x8201ABDC;  // the game's own "platform" s
 
 std::atomic<uint32_t> g_platform_var{0};
 std::atomic<int> g_applied{-1};
-std::atomic<int> g_detected{0};
 
-#if defined(_WIN32)
-// True when a Sony controller (USB vendor 054C) is attached.
-bool PlayStationControllerPresent() {
-  UINT count = 0;
-  if (GetRawInputDeviceList(nullptr, &count, sizeof(RAWINPUTDEVICELIST)) != 0 || count == 0) {
-    return false;
-  }
-  std::vector<RAWINPUTDEVICELIST> devices(count);
-  if (GetRawInputDeviceList(devices.data(), &count, sizeof(RAWINPUTDEVICELIST)) == UINT(-1)) {
-    return false;
-  }
-  for (UINT i = 0; i < count; ++i) {
-    if (devices[i].dwType != RIM_TYPEHID) {
-      continue;
-    }
-    char name[512];
-    UINT size = sizeof name;
-    if (GetRawInputDeviceInfoA(devices[i].hDevice, RIDI_DEVICENAME, name, &size) == UINT(-1)) {
-      continue;
-    }
-    std::string upper(name);
-    for (char& c : upper) {
-      c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
-    }
-    // USB: VID_054C. Bluetooth: VID&0002054C.
-    if (upper.find("VID_054C") != std::string::npos ||
-        upper.find("VID&0002054C") != std::string::npos) {
-      return true;
-    }
-  }
-  return false;
-}
-#endif
-
-// 1 = PlayStation glyphs, 0 = Xbox glyphs.
+// 1 = PlayStation glyphs, 0 = Xbox glyphs. Auto keeps the Xbox glyphs on
+// Linux; the setting can still force either set.
 int WantedPlatform() {
   std::string mode = REXCVAR_GET(mcla_button_prompts);
   if (mode == "playstation") {
     return 1;
   }
-  if (mode == "xbox") {
-    return 0;
-  }
-#if defined(_WIN32)
-  return g_detected.load(std::memory_order_relaxed);
-#elif REX_PLATFORM_PS5
-  return 1;
-#else
   return 0;
-#endif
 }
 
 void WritePlatformVar(uint32_t entry, int value) {
@@ -115,15 +63,6 @@ int g_movie_count = 0;
 
 // Called once per frame from the frame-timing hook.
 void MclaTickButtonPrompts() {
-#if defined(_WIN32)
-  // Re-detect about every two seconds so plugging in a controller is noticed.
-  static auto next_check = std::chrono::steady_clock::now();
-  const auto now = std::chrono::steady_clock::now();
-  if (now >= next_check) {
-    next_check = now + std::chrono::seconds(2);
-    g_detected.store(PlayStationControllerPresent() ? 1 : 0, std::memory_order_relaxed);
-  }
-#endif
   const uint32_t entry = g_platform_var.load(std::memory_order_relaxed);
   if (!entry) {
     return;
@@ -142,9 +81,6 @@ void mcla_platform_var_init(PPCRegister& r27) {
   if (entry < 0x10000) {
     return;
   }
-#if defined(_WIN32)
-  g_detected.store(PlayStationControllerPresent() ? 1 : 0, std::memory_order_relaxed);
-#endif
   const int want = WantedPlatform();
   g_platform_var.store(entry, std::memory_order_relaxed);
   WritePlatformVar(entry, want);

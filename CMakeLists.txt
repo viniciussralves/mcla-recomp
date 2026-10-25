@@ -14,7 +14,6 @@ include(generated/rexglue.cmake)
 set(MCLA_SOURCES
     src/main.cpp
     src/mcla_app.cpp
-    src/crash_trace.cpp
     src/audio_fallback.cpp
     src/frame_timing.cpp
     src/render_perf.cpp
@@ -23,19 +22,9 @@ set(MCLA_SOURCES
     src/button_prompts.cpp
     src/settings_menu.cpp
     src/perf_overlay.cpp
-    src/sampling_profiler.cpp
     src/code_pointer_scan.cpp
 )
 
-if(WIN32)
-    add_executable(mcla WIN32 ${MCLA_SOURCES})
-else()
-    add_executable(mcla ${MCLA_SOURCES})
-endif()
+add_executable(mcla ${MCLA_SOURCES})
 
 rexglue_setup_target(mcla)
-
-if(WIN32)
-    # timeBeginPeriod for the frame limiter.
-    target_link_libraries(mcla PRIVATE winmm)
-endif()

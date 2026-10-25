@@ -16,7 +16,7 @@
 #include <rex/ui/keybinds.h>
 
 REXCVAR_DEFINE_STRING(mcla_gpu_backend, "any", "MCLA",
-                      "Graphics backend for the Xenos GPU plugin: any, vulkan or d3d12");
+                      "Graphics backend for the Xenos GPU plugin: any or vulkan");
 
 
 std::unique_ptr<rex::system::IAudioSystem> CreateMclaAudioSystem(
@@ -26,9 +26,9 @@ std::unique_ptr<rex::system::IAudioSystem> CreateMclaAudioSystem(
 // the renderer and the game read them.
 void MclaApplyQualityPresetFromConfig();
 
-// Started with no options (a double-click on mcla.exe), the game should just
-// run: find the extracted game next to the executable or, as the build leaves
-// it, in the repository a few folders up, and load the Xenos GPU plugin.
+// Started with no options, the game should just run: find the extracted game
+// next to the executable or, as the build leaves it, in the repository a few
+// folders up, and load the Xenos GPU plugin.
 void MclaApp::OnConfigurePaths(rex::PathConfig& paths) {
   if (!paths.game_data_root.empty()) {
     return;

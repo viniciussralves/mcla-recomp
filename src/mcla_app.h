@@ -25,9 +25,7 @@ class MclaApp : public rex::ReXApp {
   void OnShutdown() override;
 
  private:
-  void InstallCrashTrace();
   void ConfigureFrameTiming();
-  void StartProfilerIfRequested();
   void UpdatePerfOverlay();
 
   std::unique_ptr<rex::ui::ImGuiDialog> perf_overlay_;

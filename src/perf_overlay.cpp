@@ -15,13 +15,10 @@
 
 #include <imgui.h>
 
-#include <rex/platform.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/imgui_drawer.h>
 
-#if REX_PLATFORM_LINUX
 #include <unistd.h>
-#endif
 
 // Off by default: a persistent overlay makes the presenter compose every host
 // frame into the swapchain instead of presenting the guest output directly,
@@ -35,8 +32,6 @@ namespace {
 constexpr double kSampleSeconds = 0.5;
 constexpr float kValueColumn = 70.0f;
 constexpr size_t kFrameHistorySize = 120;
-
-#if REX_PLATFORM_LINUX
 
 std::string FormatPercent(double percent) {
   if (percent < 0.0) {
@@ -175,8 +170,6 @@ bool ReadUint64File(const std::string& path, uint64_t& value) {
   return bool(file >> value);
 }
 
-#endif  // REX_PLATFORM_LINUX
-
 class MclaPerfOverlayDialog final : public rex::ui::ImGuiDialog {
  public:
   explicit MclaPerfOverlayDialog(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
@@ -213,7 +206,6 @@ void MclaPerfOverlayDialog::SampleHostStats(std::chrono::steady_clock::time_poin
           ? std::chrono::duration<double>(now - last_sample_).count()
           : 0.0;
 
-#if REX_PLATFORM_LINUX
   SystemCpuTimes system_times;
   const bool have_system_times = ReadSystemCpuTimes(system_times);
   uint64_t process_ticks = 0;
@@ -263,9 +255,6 @@ void MclaPerfOverlayDialog::SampleHostStats(std::chrono::steady_clock::time_poin
   if (ReadUint64File(paths.vram_total, value)) {
     vram_total_ = value;
   }
-#else
-  (void)elapsed_seconds;
-#endif
 
   have_sample_ = true;
 }
@@ -320,7 +309,6 @@ void MclaPerfOverlayDialog::OnDraw(ImGuiIO& io) {
     ImGui::PlotLines("##frame_history", frame_history_.data(), int(frame_history_.size()),
                      int(frame_history_index_), nullptr, 0.0f, 50.0f, ImVec2(180.0f, 34.0f));
 
-#if REX_PLATFORM_LINUX
     row("CPU", FormatPercent(cpu_percent_));
     row("MCLA", FormatPercent(game_cpu_percent_));
     // The GPU and VRAM figures come from sysfs, which only the amdgpu driver
@@ -333,7 +321,6 @@ void MclaPerfOverlayDialog::OnDraw(ImGuiIO& io) {
     if (vram_total_) {
       row("VRAM", FormatBytes(vram_used_, vram_total_));
     }
-#endif
   }
   ImGui::End();
 }

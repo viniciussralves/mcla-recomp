@@ -26,16 +26,13 @@
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
-#include <rex/platform.h>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <rex/system/function_dispatcher.h>
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
 
-#if REX_PLATFORM_LINUX
 #include <SDL3/SDL_video.h>
-#endif
 
 REXCVAR_DEFINE_BOOL(mcla_motion_blur, true, "MCLA", "Motion blur");
 REXCVAR_DEFINE_BOOL(mcla_depth_of_field, true, "MCLA", "Depth of field blur");
@@ -44,10 +41,6 @@ REXCVAR_DEFINE_BOOL(mcla_settings_menu, true, "MCLA",
 REXCVAR_DEFINE_STRING(mcla_quality_preset, "CUSTOM", "MCLA",
                       "Quality preset chosen in DISPLAY; changing an option it controls sets it "
                       "back to CUSTOM");
-
-// Set by a host that keeps the settings file somewhere other than next to
-// the executable (PS5).
-const char* g_mcla_settings_path = nullptr;
 
 namespace {
 
@@ -349,14 +342,12 @@ std::string OptionGet(const char* name) {
   return rex::cvar::GetFlagByName(name);
 }
 
-#if REX_PLATFORM_LINUX
 // The OUTPUT RESOLUTION row and the presets that set it need a compositor
 // that scales the swapchain to the window; Mesa's X11 WSI does not.
 bool OutputResolutionSupported() {
   const char* driver = SDL_GetCurrentVideoDriver();
   return driver && std::strcmp(driver, "wayland") == 0;
 }
-#endif
 
 bool IsPresetControlledOption(const char* name) {
   static const char* const kOptions[] = {
@@ -390,13 +381,11 @@ void ApplyQualityPreset(const char* preset) {
   const bool high = quality || native_4k;
   REXLOG_INFO("settings menu: quality preset '{}'", preset);
 
-#if REX_PLATFORM_LINUX
   // On X11 the swapchain is fixed to the window size, so leave the output
   // alone rather than saving a value that the presenter cannot honour.
   if (OutputResolutionSupported()) {
     rex::cvar::SetFlagByName("present_max_height", native_4k ? "2160" : "1080");
   }
-#endif
   rex::cvar::SetFlagByName("resolution_scale",
                            native_4k ? "3" : (high ? "2" : "1"));
   rex::cvar::SetFlagByName("mcla_msaa", performance ? "false" : "true");
@@ -446,12 +435,7 @@ struct ItemDef {
 // A value's text is also the name of the Flash element created for it, and
 // characters such as '/' are path separators there (LARecomp found that the
 // hard way: it crashes UI setup).
-#if REX_PLATFORM_PS5
-// The console's display is 60 Hz.
-constexpr double kFpsTargets[] = {30.0, 60.0};
-#else
 constexpr double kFpsTargets[] = {30.0, 60.0, 120.0, 0.0};
-#endif
 constexpr int kFpsTargetCount = int(sizeof(kFpsTargets) / sizeof(kFpsTargets[0]));
 constexpr const char* kPromptValues[] = {"auto", "xbox", "playstation"};
 constexpr const char* kPromptLabels[] = {"AUTO", "XBOX", "PLAYSTATION"};
@@ -474,30 +458,22 @@ constexpr const char* kPresetLabels[] = {"CUSTOM", "PERFORMANCE", "BALANCED", "Q
 // compositor scaling the swapchain (Wayland); Mesa's X11 WSI requires a
 // swapchain the size of the window, so CreateSubmenus removes the row there.
 // Keep it last so removing it only shortens the list.
-#if REX_PLATFORM_LINUX
 constexpr const char* kOutputValues[] = {"0", "720", "1080", "1440", "2160"};
 constexpr const char* kOutputLabels[] = {"NATIVE", "720P", "1080P", "1440P", "4K"};
-#endif
 
 const ItemDef kDisplayItems[] = {
     {"PM_MxResolution", ItemKind::kStringChoice, "resolution_scale",
      "RENDER SCALE (NEXT START)", kResolutionValues, kResolutionLabels, nullptr, 3},
     {"PM_MxFps", ItemKind::kNumberChoice, "mcla_fps", "FPS TARGET", nullptr, nullptr, kFpsTargets,
      kFpsTargetCount, "%.0f", "UNCAPPED"},
-#if !REX_PLATFORM_PS5
-    // Neither means anything on the console: there is one display mode, and
-    // the PS5 host turns the emulated vsync off at every start.
     {"PM_MxVsync", ItemKind::kToggle, "vsync", "VSYNC"},
     {"PM_MxFullscreen", ItemKind::kToggle, "fullscreen", "FULLSCREEN"},
-#endif
     {"PM_MxMotionBlur", ItemKind::kToggle, "mcla_motion_blur", "MOTION BLUR"},
     {"PM_MxDof", ItemKind::kToggle, "mcla_depth_of_field", "DEPTH OF FIELD"},
     {"PM_MxPreset", ItemKind::kStringChoice, "mcla_quality_preset",
      "QUALITY PRESET (NEXT START)", kPresetValues, kPresetLabels, nullptr, 5},
-#if REX_PLATFORM_LINUX
     {"PM_MxOutput", ItemKind::kStringChoice, "present_max_height",
      "OUTPUT RESOLUTION (NEXT START)", kOutputValues, kOutputLabels, nullptr, 5},
-#endif
 };
 
 // Detail the game can do without when the frame rate matters more; all as
@@ -569,7 +545,6 @@ void ConfigureMenuItems() {
     return;
   }
   configured = true;
-#if REX_PLATFORM_LINUX
   const char* driver = SDL_GetCurrentVideoDriver();
   // Not initialized yet: leave the menu alone rather than hiding a row that
   // may work once the window exists.
@@ -585,7 +560,6 @@ void ConfigureMenuItems() {
       "settings menu: OUTPUT RESOLUTION hidden (SDL video driver '{}' cannot scale the "
       "swapchain)",
       driver ? driver : "unknown");
-#endif
 }
 
 int ItemValueCount(const ItemDef& item) {
@@ -924,11 +898,8 @@ void SaveSettingsIfChanged() {
   if (!g_settings_dirty.exchange(false, std::memory_order_relaxed)) {
     return;
   }
-  // The file the runtime loads at start: <executable folder>/mcla.toml, or
-  // the file a host without a writable executable folder names.
-  const auto path = g_mcla_settings_path
-                        ? std::filesystem::path(g_mcla_settings_path)
-                        : rex::filesystem::GetExecutableFolder() / "mcla.toml";
+  // The file the runtime loads at start: <executable folder>/mcla.toml.
+  const auto path = rex::filesystem::GetExecutableFolder() / "mcla.toml";
   // SaveConfig only writes values that differ from their defaults. vsync
   // defaults to on, but ConfigureFrameTiming turns it off at startup unless the
   // player saved an explicit value, so choosing it back on would be lost if it

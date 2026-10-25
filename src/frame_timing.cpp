@@ -28,15 +28,6 @@
 #include <rex/logging.h>
 #include <rex/runtime.h>
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <timeapi.h>
-#include <immintrin.h>
-#endif
-
 REXCVAR_DEFINE_INT32(mcla_fps, 30, "MCLA",
                      "Frame-rate target: 30, 60 or 120. 0 runs uncapped. "
                      "-1 restores the game's original fixed 30 Hz timing")
@@ -134,11 +125,7 @@ void WaitForFrameDeadline() {
       std::this_thread::sleep_for(std::chrono::microseconds(next_us - now - kSpinMicros));
     }
     while (NowMicros() < next_us) {
-#if defined(_WIN32)
-      _mm_pause();
-#else
       std::this_thread::yield();
-#endif
     }
   }
   now = NowMicros();
@@ -302,10 +289,6 @@ void MclaApp::ConfigureFrameTiming() {
   if (rex::cvar::GetFlagSource("vsync") == rex::cvar::Source::kDefault) {
     rex::cvar::SetFlagByName("vsync", "false");
   }
-#ifdef _WIN32
-  // Default Windows timer granularity is 15.6 ms; sleeps need 1 ms.
-  timeBeginPeriod(1);
-#endif
   REXLOG_INFO("frame timing: real frame delta, target {} FPS, vsync {}", REXCVAR_GET(mcla_fps),
               rex::cvar::GetFlagByName("vsync"));
 }

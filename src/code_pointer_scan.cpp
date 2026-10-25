@@ -92,7 +92,6 @@ bool StandsAlone(const rex::memory::Memory* memory, uint32_t begin, uint32_t add
 void MclaApp::OnPreLaunchModule() {
   std::string out_path = REXCVAR_GET(mcla_scan_code_pointers);
   if (out_path.empty()) {
-    InstallCrashTrace();
     return;
   }
   auto* memory = runtime()->memory();
